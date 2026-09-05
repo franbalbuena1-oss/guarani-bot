@@ -27,11 +27,11 @@ DEFAULT_PROPUESTAS = [
 ]
 PROPUESTAS = os.environ.get("PROPUESTAS", "|".join(DEFAULT_PROPUESTAS)).split("|")
 
-GUARANI_USER = os.environ["GUARANI_USER"]
-GUARANI_PASS = os.environ["GUARANI_PASS"]
-GMAIL_USER = os.environ["GMAIL_USER"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER)
+GUARANI_USER = os.environ["GUARANI_USER"].strip()
+GUARANI_PASS = os.environ["GUARANI_PASS"].strip()
+GMAIL_USER = os.environ["GMAIL_USER"].strip()
+GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip().replace(" ", "")
+NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER).strip()
 
 
 def load_state():
@@ -113,6 +113,7 @@ def main():
         try:
             login(page)
         except Exception as e:
+            print(f"ERROR al iniciar sesion: {e}", flush=True)
             browser.close()
             send_email(
                 "[Guarani Bot] Error al iniciar sesion",
@@ -125,6 +126,7 @@ def main():
                 select_propuesta(page, propuesta)
                 current_by_propuesta[propuesta] = scrape_lista_materias(page)
             except Exception as e:
+                print(f"ERROR revisando '{propuesta}': {e}", flush=True)
                 safe_name = "".join(c if c.isalnum() else "_" for c in propuesta)
                 page.screenshot(path=f"debug_{safe_name}.png")
                 errors.append(f"- {propuesta}: {e}")
