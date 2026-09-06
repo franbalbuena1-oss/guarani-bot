@@ -64,8 +64,9 @@ def login(page):
     page.fill("#usuario", GUARANI_USER)
     page.fill("#password", GUARANI_PASS)
 
-    with page.expect_navigation(wait_until="networkidle", timeout=20000):
-        page.click("#login")
+    page.click("#login")
+    page.wait_for_selector("#lista_materias, #usuario", timeout=20000)
+    page.wait_for_timeout(1000)
 
     print(f"URL despues del submit: {page.url}", flush=True)
 
@@ -97,8 +98,8 @@ def select_propuesta(page, nombre):
         link = page.get_by_text(nombre, exact=True)
     link.first.click()
 
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(700)
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(1000)
 
 
 def scrape_lista_materias(page):
