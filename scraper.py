@@ -1,34 +1,23 @@
 """
-Bot que revisa el Guarani de Economicas-UNICEN y avisa por email cuando
-aparece una materia optativa o actividad de libre eleccion nueva.
+Bot que revisa la cartelera publica de Optativas y ALE de Economicas-UNICEN
+y avisa por email cuando aparece una oferta nueva.
 
-Credenciales y config vienen SIEMPRE por variables de entorno (GitHub Secrets
-en el workflow), nunca hardcodeadas aca.
+Esta pagina es publica (no requiere login), asi que no hace falta ninguna
+credencial de Guarani: https://econ.unicen.edu.ar/alumnos/ale/ofertas-ale-y-optativas
 """
 
 import json
 import os
 import smtplib
-import sys
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import requests
+from bs4 import BeautifulSoup
 
-BASE = "https://guarani.unicen.edu.ar/autogestion/economicas"
-CURSADA_URL = f"{BASE}/cursada"
+URL = "https://econ.unicen.edu.ar/alumnos/ale/ofertas-ale-y-optativas"
 STATE_PATH = Path(__file__).parent / "state.json"
 
-# Las propuestas a vigilar. Se pueden sobreescribir con la variable de
-# entorno PROPUESTAS separando por "|", por si cambian de plan/orientacion.
-DEFAULT_PROPUESTAS = [
-    "Actividades optativas - lgt plan 50",
-    "Actividades de libre eleccion - plan 50",
-]
-PROPUESTAS = os.environ.get("PROPUESTAS", "|".join(DEFAULT_PROPUESTAS)).split("|")
-
-GUARANI_USER = os.environ["GUARANI_USER"].strip()
-GUARANI_PASS = os.environ["GUARANI_PASS"].strip()
 GMAIL_USER = os.environ["GMAIL_USER"].strip()
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"].strip().replace(" ", "")
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", GMAIL_USER).strip()
@@ -57,138 +46,55 @@ def send_email(subject, body):
         smtp.sendmail(GMAIL_USER, [NOTIFY_EMAIL], msg.as_string())
 
 
-def login(page):
-    response = page.goto(CURSADA_URL)
-    print(f"GET {CURSADA_URL} -> status {response.status if response else '?'}", flush=True)
-    page.wait_for_selector("#usuario", timeout=15000)
-    page.fill("#usuario", GUARANI_USER)
-    page.fill("#password", GUARANI_PASS)
+def scrape_ofertas():
+    resp = requests.get(
+        URL,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; guarani-watch-bot/1.0)"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-    page.click("#login")
-    page.wait_for_selector("#lista_materias, #usuario", timeout=20000)
-    page.wait_for_timeout(1000)
-
-    print(f"URL despues del submit: {page.url}", flush=True)
-
-    body_text = page.locator("body").inner_text()
-    for linea in body_text.splitlines():
-        linea = linea.strip()
-        if linea and any(
-            palabra in linea.lower()
-            for palabra in ["incorrect", "error", "invalid", "bloque", "captcha", "intento"]
-        ):
-            print(f"Texto sospechoso en la pagina: {linea}", flush=True)
-
-    if page.locator("#lista_materias").count() == 0 and page.locator("#usuario").count() > 0:
-        page.screenshot(path="debug_login.png", full_page=True)
-        raise RuntimeError(
-            "No se pudo iniciar sesion en Guarani (usuario/contrasena "
-            "incorrectos o el sitio cambio). Ver debug_login.png"
-        )
-
-
-def select_propuesta(page, nombre):
-    toggle = page.locator(".dropdown-toggle").filter(has_text="plan 50")
-    if toggle.count() == 0:
-        toggle = page.locator("button, a").filter(has_text="plan 50")
-    toggle.first.click()
-
-    link = page.get_by_role("link", name=nombre, exact=True)
-    if link.count() == 0:
-        link = page.get_by_text(nombre, exact=True)
-    link.first.click()
-
-    page.wait_for_load_state("domcontentloaded")
-    page.wait_for_timeout(1000)
-
-
-def scrape_lista_materias(page):
-    page.wait_for_selector("#js-listado-materias", timeout=15000)
-    items = page.locator("#js-listado-materias ul.nav-list li a")
-    result = {}
-    for i in range(items.count()):
-        a = items.nth(i)
-        href = a.get_attribute("href") or ""
-        title = a.get_attribute("title") or a.inner_text().strip()
-        key = href.rstrip("/").split("/")[-1] or title
-        result[key] = title
-    return result
+    items = soup.select("#views-bootstrap-ofertas-ale-y-optativas-page-1 > li")
+    ofertas = {}
+    for li in items:
+        header = li.select_one(".card-header")
+        if not header:
+            continue
+        codigo = header.select_one("h3")
+        titulo = header.select_one("h2")
+        categoria = header.select_one(".badge")
+        codigo = codigo.get_text(strip=True) if codigo else None
+        titulo = titulo.get_text(strip=True) if titulo else ""
+        categoria = categoria.get_text(strip=True) if categoria else ""
+        if not codigo:
+            continue
+        ofertas[codigo] = f"{codigo} - {titulo} ({categoria})"
+    return ofertas
 
 
 def main():
     state = load_state()
-    current_by_propuesta = {}
-    errors = []
+    previous = state.get("ofertas")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1366, "height": 768},
-            locale="es-AR",
-        )
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = context.new_page()
+    current = scrape_ofertas()
+    print(f"Ofertas encontradas: {len(current)}", flush=True)
 
-        try:
-            login(page)
-        except Exception as e:
-            print(f"ERROR al iniciar sesion: {e}", flush=True)
-            browser.close()
-            send_email(
-                "[Guarani Bot] Error al iniciar sesion",
-                f"El bot no pudo iniciar sesion en Guarani.\n\nDetalle: {e}",
-            )
-            sys.exit(1)
-
-        for propuesta in PROPUESTAS:
-            try:
-                select_propuesta(page, propuesta)
-                current_by_propuesta[propuesta] = scrape_lista_materias(page)
-            except Exception as e:
-                print(f"ERROR revisando '{propuesta}': {e}", flush=True)
-                safe_name = "".join(c if c.isalnum() else "_" for c in propuesta)
-                page.screenshot(path=f"debug_{safe_name}.png")
-                errors.append(f"- {propuesta}: {e}")
-
-        browser.close()
-
-    new_by_propuesta = {}
-    for propuesta, current in current_by_propuesta.items():
-        previous = state.get(propuesta)
-        if previous is not None:
-            new_keys = set(current) - set(previous)
-            if new_keys:
-                new_by_propuesta[propuesta] = {k: current[k] for k in new_keys}
-        state[propuesta] = current
-
-    save_state(state)
-
-    if new_by_propuesta:
-        lines = []
-        for propuesta, items in new_by_propuesta.items():
-            lines.append(f"\n{propuesta}:")
-            for title in items.values():
-                lines.append(f"  - {title}")
-        body = "Se publicaron nuevas materias/actividades en Guarani:\n" + "\n".join(lines)
-        send_email("[Guarani Bot] Nueva oferta disponible", body)
-        print(body)
+    if previous is not None:
+        new_keys = set(current) - set(previous)
+        if new_keys:
+            lines = [current[k] for k in new_keys]
+            body = "Nuevas ofertas de ALE / Optativas:\n\n" + "\n".join(f"- {l}" for l in lines)
+            body += f"\n\nVer la pagina completa: {URL}"
+            send_email("[Guarani Bot] Nueva oferta disponible", body)
+            print(body, flush=True)
+        else:
+            print("Sin novedades.", flush=True)
     else:
-        print("Sin novedades.")
+        print("Primera corrida: guardando base sin avisar.", flush=True)
 
-    if errors:
-        send_email(
-            "[Guarani Bot] Error revisando algunas propuestas",
-            "No se pudo revisar:\n" + "\n".join(errors),
-        )
-        sys.exit(1)
+    state["ofertas"] = current
+    save_state(state)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@ name: Guarani Watch
 
 on:
   schedule:
-    # Cada 30 minutos.
-    - cron: "*/30 * * * *"
+    # Cada 10 minutos.
+    - cron: "*/10 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -19,40 +19,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Instalar dependencias de Python
+      - name: Instalar dependencias
         run: pip install -r requirements.txt
-
-      - name: Cachear navegador de Playwright
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-
-      - name: Instalar Chromium (solo si no esta en cache)
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install --with-deps chromium
-
-      - name: Instalar dependencias del sistema (si el navegador vino de cache)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: playwright install-deps chromium
 
       - name: Ejecutar scraper
         env:
-          GUARANI_USER: ${{ secrets.GUARANI_USER }}
-          GUARANI_PASS: ${{ secrets.GUARANI_PASS }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
         run: python scraper.py
-
-      - name: Subir capturas de debug (si algo fallo)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: debug_*.png
-          if-no-files-found: ignore
 
       - name: Guardar estado actualizado
         if: always()
@@ -60,5 +35,5 @@ jobs:
           git config user.name "guarani-bot"
           git config user.email "actions@github.com"
           git add state.json
-          git diff --cached --quiet || git commit -m "Actualizar estado de materias"
+          git diff --cached --quiet || git commit -m "Actualizar estado de ofertas"
           git push
