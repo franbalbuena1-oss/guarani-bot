@@ -58,15 +58,28 @@ def send_email(subject, body):
 
 
 def login(page):
-    page.goto(CURSADA_URL)
+    response = page.goto(CURSADA_URL)
+    print(f"GET {CURSADA_URL} -> status {response.status if response else '?'}", flush=True)
     page.wait_for_selector("#usuario", timeout=15000)
     page.fill("#usuario", GUARANI_USER)
     page.fill("#password", GUARANI_PASS)
-    page.click("#login")
-    page.wait_for_load_state("networkidle")
+
+    with page.expect_navigation(wait_until="networkidle", timeout=20000):
+        page.click("#login")
+
+    print(f"URL despues del submit: {page.url}", flush=True)
+
+    body_text = page.locator("body").inner_text()
+    for linea in body_text.splitlines():
+        linea = linea.strip()
+        if linea and any(
+            palabra in linea.lower()
+            for palabra in ["incorrect", "error", "invalid", "bloque", "captcha", "intento"]
+        ):
+            print(f"Texto sospechoso en la pagina: {linea}", flush=True)
 
     if page.locator("#lista_materias").count() == 0 and page.locator("#usuario").count() > 0:
-        page.screenshot(path="debug_login.png")
+        page.screenshot(path="debug_login.png", full_page=True)
         raise RuntimeError(
             "No se pudo iniciar sesion en Guarani (usuario/contrasena "
             "incorrectos o el sitio cambio). Ver debug_login.png"
